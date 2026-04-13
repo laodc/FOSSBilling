@@ -30,10 +30,11 @@ class Service implements InjectionAwareInterface
         return $this->di;
     }
 
-    public function approveClientEmailByHash($hash): bool
+    public function approveClientEmailByHash(string $hash): bool
     {
         $db = $this->di['db'];
-        $result = $db->getRow('SELECT id, client_id FROM extension_meta WHERE extension = "mod_client" AND meta_key = "confirm_email" AND meta_value = :hash', [':hash' => $hash]);
+        $client = $this->di['loggedin_client'];
+        $result = $db->getRow('SELECT id, client_id FROM extension_meta WHERE extension = "mod_client" AND meta_key = "confirm_email" AND meta_value = :hash AND client_id = :id', [':hash' => $hash, ':id' => $client->id]);
         if (!$result) {
             throw new InformationException('Invalid email confirmation link');
         }
@@ -43,10 +44,18 @@ class Service implements InjectionAwareInterface
         return true;
     }
 
-    public function generateEmailConfirmationLink($client_id)
+    private function generateEmailConfirmationHash(): string
     {
-        $hash = strtolower((string) $this->di['tools']->generatePassword(50));
+        return strtolower((string) $this->di['tools']->generatePassword(50));
+    }
+
+    public function generateEmailConfirmationLink(int $client_id, ?string $hash = null): string
+    {
+        $hash ??= $this->generateEmailConfirmationHash();
         $db = $this->di['db'];
+
+        // Delete any previous email confirmation codes, only latest one should exist in the database
+        $db->exec('DELETE FROM extension_meta WHERE extension = "mod_client" AND meta_key = "confirm_email" AND client_Id = :id', ['id' => $client_id]);
 
         $meta = $db->dispense('ExtensionMeta');
         $meta->extension = 'mod_client';
@@ -76,12 +85,15 @@ class Service implements InjectionAwareInterface
             if (isset($config['require_email_confirmation']) && $config['require_email_confirmation']) {
                 $clientService = $di['mod_service']('client');
                 $email['require_email_confirmation'] = true;
-                $email['email_confirmation_link'] = $clientService->generateEmailConfirmationLink($params['id']);
+                $email['email_confirmation_code'] = $clientService->generateEmailConfirmationHash();
+                $email['email_confirmation_link'] = $clientService->generateEmailConfirmationLink((int) $params['id'], $email['email_confirmation_code']);
             }
 
             $emailService->sendTemplate($email);
         } catch (\Exception $exc) {
             error_log($exc->getMessage());
+
+            return false;
         }
 
         return true;
@@ -407,7 +419,7 @@ class Service implements InjectionAwareInterface
         return $this->di['db']->getCell($sql, [$c->id]);
     }
 
-    public function get($data)
+    public function get(array $data): \Model_Client
     {
         if (!isset($data['id']) && !isset($data['email'])) {
             throw new InformationException('Client ID or email is required');
@@ -613,21 +625,31 @@ class Service implements InjectionAwareInterface
         return $this->di['auth']->authorizeUser($model, $plainTextPassword);
     }
 
-    public function sendEmailConfirmationForClient(\Model_Client $client): void
+    public function sendEmailConfirmationForClient(\Model_Client $client): bool
     {
+        $config = $this->di['mod_config']('client');
+
         try {
             $email = [];
             $email['to_client'] = $client->id;
             $email['code'] = 'mod_client_confirm';
-            $email['require_email_confirmation'] = true;
-            $email['email_confirmation_link'] = $this->generateEmailConfirmationLink($client->id);
+            $email['require_email_confirmation'] = false;
+            if (isset($config['require_email_confirmation']) && $config['require_email_confirmation']) {
+                $email['require_email_confirmation'] = true;
+                $email['email_confirmation_code'] = $this->generateEmailConfirmationHash();
+                $email['email_confirmation_link'] = $this->generateEmailConfirmationLink((int) $client->id, $email['email_confirmation_code']);
+            }
             $email['send_now'] = true;
 
             $emailService = $this->di['mod_service']('email');
             $emailService->sendTemplate($email);
         } catch (\Exception $exc) {
             error_log($exc->getMessage());
+
+            return false;
         }
+
+        return true;
     }
 
     public function canChangeEmail(\Model_Client $client, $email): bool

@@ -21,16 +21,17 @@ class Client extends \Api_Abstract
     /**
      * Get payments information.
      *
-     * @return array
+     * @return array return pager information and data
      */
-    public function balance_get_list($data)
+    public function balance_get_list(array $data): array
     {
         $service = $this->di['mod_service']('Client', 'Balance');
         $data['client_id'] = $this->identity->id;
 
         [$q, $params] = $service->getSearchQuery($data);
+        $page = $data['page'] ?? null;
         $per_page = $data['per_page'] ?? $this->di['pager']->getDefaultPerPage();
-        $pager = $this->di['pager']->getPaginatedResultSet($q, $params, $per_page);
+        $pager = $this->di['pager']->getPaginatedResultSet($q, $params, $per_page, $page);
 
         foreach ($pager['list'] as $key => $item) {
             $balance = $this->di['db']->getExistingModelById('ClientBalance', $item['id'], 'Balance not found');
@@ -43,21 +44,21 @@ class Client extends \Api_Abstract
     /**
      * Get client balance.
      *
-     * @return float
+     * @return float Returns balance
      */
-    public function balance_get_total()
+    public function balance_get_total(): float
     {
         $service = $this->di['mod_service']('Client', 'Balance');
 
         return $service->getClientBalance($this->identity);
     }
 
-    public function is_taxable()
+    public function is_taxable(): bool
     {
         return $this->getService()->isClientTaxable($this->identity);
     }
 
-    public function resend_email_verification()
+    public function resend_email_verification(): bool
     {
         if ($this->identity->email_approved) {
             // Email is already validated, so we don't need to do so again
@@ -65,5 +66,28 @@ class Client extends \Api_Abstract
         }
 
         return $this->getService()->sendEmailConfirmationForClient($this->identity);
+    }
+
+    /**
+     * Allow a user to verify the email address.
+     *
+     * @param array $data user define data
+     *
+     * @return bool true on successful verification
+     */
+    public function confirm_email_verification_code(array $data): bool
+    {
+        if ($this->identity->email_approved) {
+            // Email is already validated, so we don't need to do so again
+            return true;
+        }
+
+        $required = [
+            'verification_code' => 'Verification code required',
+        ];
+
+        $this->di['validator']->checkRequiredParamsForArray($required, $data);
+
+        return $this->getService()->approveClientEmailByHash($data['verification_code']);
     }
 }
